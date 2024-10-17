@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 #include <utility>
 #include <algorithm>
 
@@ -14,6 +15,24 @@ using namespace std;
 static bool needXp = false;
 static string buildVer = "";
 static string kitRoot = "";
+static map<string, string> newVars;
+static string pathAppend = "";
+static string includeAppend = "";
+static string libAppend = "";
+
+static const char * envs[] = { 
+	"EXTERNAL_INCLUDE", 
+	"INCLUDE", 
+	"LIB", 
+	"LIBPATH", 
+	"Path", 
+	"UCRTVersion", 
+	"WindowsLibPath", 
+	"WindowsSDKLibVersion", 
+	"WindowsSdkVerBinPath", 
+	"WindowsSDKVersion",
+	nullptr
+};
 
 static void splitString(const std::string & strtem, const char a, std::vector<std::string> & res)
 {
@@ -55,8 +74,26 @@ static vector<string> envToStrList(const string & env)
 	return strlist;
 }
 
+static string changeToNewVersion(const string & envValue, const string & currSdkVer, const string & replaceVer)
+{
+	if (envValue.empty())
+		return "";
+	//
+	string s1 = envValue;
+	for (string::size_type pos = 0; pos != string::npos; pos += replaceVer.length())
+	{
+		pos = s1.find(currSdkVer, pos);
+		if (pos != string::npos)
+			s1.replace(pos, currSdkVer.length(), replaceVer);
+		else
+			break;
+	}
+	return s1;
+}
+
 static void switchToNewEnvVar()
 {
+	int i;
 	// 从注册表中读取WinSDK安装目录
 	HKEY hKey;
 	if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
@@ -116,7 +153,7 @@ static void switchToNewEnvVar()
 	// 获取替换版本号
 	vector<string> versionList;
 	string replaceVersion = "";
-	if (!buildVer.empty()) {
+	if (!buildVer.empty()) {								//  需要更改 Win10 SDK 的版本
 		string findText = kitRoot + "Lib\\*";
 		WIN32_FIND_DATAA findData;
 		HANDLE handle = FindFirstFileA(findText.c_str(), &findData);
@@ -132,16 +169,22 @@ static void switchToNewEnvVar()
 		}
 		//
 		auto findMatchVersion = [](const vector<string> & versionList, const string & buildVer) -> string {
+			// 
 			auto matchVersion = [](const string & matchVer, const string & buildVer) -> bool {
 				if (matchVer == buildVer)	return true;
 				if (0 == strncmp(buildVer.c_str(), "10.0.", sizeof("10.0.") - 1)) {					// starts_with
-					if (0 == strncmp(buildVer.c_str(), buildVer.c_str(), buildVer.length())) {
+					if (0 == strncmp(matchVer.c_str(), buildVer.c_str(), buildVer.length())) {
 						return true;
 					}
 				}
 				else {
-
+					if (buildVer.length() >= 5 && nullptr == strchr(buildVer.c_str(), '.')) {
+						if (strstr(matchVer.c_str(), buildVer.c_str()) != nullptr) {
+							return true;
+						}
+					}
 				}
+				return false;
 			};
 			//
 			for (auto cit = versionList.cbegin(); cit != versionList.cend(); cit++) {
@@ -152,21 +195,157 @@ static void switchToNewEnvVar()
 			return "";
 		};
 		replaceVersion = findMatchVersion(versionList, buildVer);
+		//
+		//
+		if (!replaceVersion.empty()) {
+			printf(" Change WinSDK version to %s\n", replaceVersion.c_str());
+			i = 0;
+			const char * envName = envs[i];
+			while (envName != nullptr) {
+				string envValue = getEnvValue(envName);
+				string newEnvValue = changeToNewVersion(envValue, currSdkVer, replaceVersion);
+				if (!newEnvValue.empty()) {
+					newVars.insert(make_pair(envName, newEnvValue));
+				}
+				i++;
+				envName = envs[i];
+			}
+		}
+		else {
+			printf("No need to change WinSDK version\n");
+			i = 0;
+			const char * envName = envs[i];
+			while (envName != nullptr) {
+				string envValue = getEnvValue(envName);
+				if (!envValue.empty()) {
+					newVars.insert(make_pair(envName, envValue));
+				}
+				i++;
+				envName = envs[i];
+			}
+		}
 	}
-	
-
-
+	else {
+		// buildVer.empty() == true
+		i = 0;
+		const char * envName = envs[i];
+		while (envName != nullptr) {
+			string envValue = getEnvValue(envName);
+			if (!envValue.empty()) {
+				newVars.insert(make_pair(envName, envValue));
+			}
+			i++;
+			envName = envs[i];
+		}
+	}
 }
 
 static void addXpBuildEnv()
 {
+	if (!needXp)
+		return;
+	DWORD type, size = 256;
+	char regValue[256];
+	// 从注册表中读取Win7 SDK的安装目录
+	string win7SDKDir = "";
+	HKEY hKey;
+	if (win7SDKDir.empty()) {
+		if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Microsoft SDKs\\Windows\\v7.1A\\XPSupport", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+			if (RegQueryValueExA(hKey, "InstallationFolder", NULL, &type, (LPBYTE)&regValue, &size) == ERROR_SUCCESS) {
+				win7SDKDir = regValue;
+			}
+			RegCloseKey(hKey);
+		}
+	}
+	if (win7SDKDir.empty()) {
+		if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Microsoft SDKs\\Windows\\v7.1A", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+			if (RegQueryValueExA(hKey, "InstallationFolder", NULL, &type, (LPBYTE)&regValue, &size) == ERROR_SUCCESS) {
+				win7SDKDir = regValue;
+			}
+			RegCloseKey(hKey);
+		}
+	}
+	if (win7SDKDir.empty()) {
+		if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\Microsoft SDKs\\Windows\\v7.1A\\XPSupport", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+			if (RegQueryValueExA(hKey, "InstallationFolder", NULL, &type, (LPBYTE)&regValue, &size) == ERROR_SUCCESS) {
+				win7SDKDir = regValue;
+			}
+			RegCloseKey(hKey);
+		}
+	}
+	if (win7SDKDir.empty()) {
+		if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Microsoft\\Microsoft SDKs\\Windows\\v7.1A", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+			if (RegQueryValueExA(hKey, "InstallationFolder", NULL, &type, (LPBYTE)&regValue, &size) == ERROR_SUCCESS) {
+				win7SDKDir = regValue;
+			}
+			RegCloseKey(hKey);
+		}
+	}
+	//
+	if (win7SDKDir.empty())
+		return;
+	//
+	if (win7SDKDir[win7SDKDir.length() - 1] != '\\')
+		win7SDKDir += "\\";
+	//
+	libAppend = win7SDKDir + "Lib\\x64;";
+	includeAppend = win7SDKDir + "Include;";
+	pathAppend = win7SDKDir + "Bin;";
+}
 
+static void buildNewBatch()
+{
+	FILE * fp = fopen("a.bat", "wt");
+	for (auto it = newVars.cbegin(); it != newVars.cend(); it++) {
+		const string key = it->first;
+		const string value = it->second;
+		if (0 == stricmp(key.c_str(), "Path")) {
+			if (pathAppend.empty()) {
+				fprintf(fp, "set Path=%s\n", value.c_str());
+			}
+			else {
+				fprintf(fp, "set Path=%s%s\n", pathAppend.c_str(), value.c_str());
+			}
+		}
+		else if (0 == stricmp(key.c_str(), "INCLUDE")) {
+			if (includeAppend.empty()) {
+				fprintf(fp, "set INCLUDE=%s\n", value.c_str());
+			}
+			else {
+				fprintf(fp, "set INCLUDE=%s%s\n", includeAppend.c_str(), value.c_str());
+			}
+		}
+		else if (0 == stricmp(key.c_str(), "LIB")) {
+			if (libAppend.empty()) {
+				fprintf(fp, "set LIB=%s\n", value.c_str());
+			}
+			else {
+				fprintf(fp, "set LIB=%s%s\n", libAppend.c_str(), value.c_str());
+			}
+		}
+		else if (0 == stricmp(key.c_str(), "LIBPATH")) {
+			if (libAppend.empty()) {
+				fprintf(fp, "set LIBPATH=%s\n", value.c_str());
+			}
+			else {
+				fprintf(fp, "set LIBPATH=%s%s\n", libAppend.c_str(), value.c_str());
+			}
+		}
+		else {
+			fprintf(fp, "set %s=%s\n", key.c_str(), value.c_str());
+		}
+	}
+	if (needXp) {
+		fprintf(fp, "set CL=-D_USING_V110_SDK71_\n");
+	}
+	fclose(fp);
 }
 
 static void switchVisualCppEnv()
 {
 	switchToNewEnvVar();
 	addXpBuildEnv();
+	buildNewBatch();
 }
 
 int main(int argc, char ** argv)
@@ -188,7 +367,7 @@ int main(int argc, char ** argv)
 		printf("error: I'm not sure about your intentions, \"%s\"", label.c_str());
 		return -1;
 	}
-	if (buildVer == "" && !needXp) {
+	if (buildVer.empty() && !needXp) {
 		printf("do nothings\n");
 		return 0;								// need to do nothings
 	}
