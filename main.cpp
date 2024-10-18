@@ -13,6 +13,7 @@
 using namespace std;
 
 static bool needXp = false;
+static int vcBit = 32;
 static string buildVer = "";
 static string kitRoot = "";
 static map<string, string> newVars;
@@ -72,6 +73,60 @@ static vector<string> envToStrList(const string & env)
 	}
 	splitString(envValue, ';', strlist);
 	return strlist;
+}
+
+static int getVcBit()
+{
+	std::string temp = getEnvValue("TEMP");
+	if (temp[temp.length() - 1] != '\\')
+		temp += "\\";
+	std::string tempFile = temp + "visual-c-logo.txt";
+	// 创建输出结果文件 
+	HANDLE hTempFile;
+	SECURITY_ATTRIBUTES fsec;
+	memset(&fsec, 0, sizeof(fsec));
+	fsec.nLength = sizeof(fsec);
+	fsec.lpSecurityDescriptor = nullptr;
+	fsec.bInheritHandle = TRUE;
+	hTempFile = CreateFileA((char*)tempFile.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &fsec, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+	if (INVALID_HANDLE_VALUE == hTempFile) {
+		return 32;
+	}
+	// 执行 cl.exe 获得编译器的位数 
+	BOOL execOk = FALSE;
+	SECURITY_ATTRIBUTES sec;
+	STARTUPINFOA startInfo;
+	PROCESS_INFORMATION processInfo;
+
+	memset(&sec, 0, sizeof(sec));
+	sec.nLength = sizeof(sec);
+	sec.lpSecurityDescriptor = nullptr;
+	sec.bInheritHandle = TRUE;					//这个一定要为true,使得句柄可以继承
+	memset(&startInfo, 0, sizeof(startInfo));
+	GetStartupInfoA(&startInfo);
+	startInfo.cb = sizeof(startInfo);
+	startInfo.wShowWindow = SW_HIDE;			//隐藏命令行窗口
+	startInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+	startInfo.hStdInput = INVALID_HANDLE_VALUE;
+	startInfo.hStdOutput = hTempFile;			// 进程标准输出重定位到临时文件
+	startInfo.hStdError = hTempFile;			// 进程错误输出重定位到临时文件
+	memset(&processInfo, 0, sizeof(processInfo));
+
+	execOk = CreateProcessA(nullptr, "cl.exe", &sec, &sec, TRUE, 0, NULL, NULL, &startInfo, &processInfo);
+	if (execOk) {
+		WaitForSingleObject(processInfo.hProcess, INFINITE);  //等待命令执行完毕
+	}
+	CloseHandle(hTempFile);
+	//
+	FILE * fp = fopen(tempFile.c_str(), "r");
+	if (fp == nullptr)
+		return 32;
+	char buffer[2048];
+	fgets(buffer, 2048, fp);
+	if (strstr(buffer, "x64") || strstr(buffer, "AMD64")) {
+		return 64;
+	}
+	return 32;
 }
 
 static string changeToNewVersion(const string & envValue, const string & currSdkVer, const string & replaceVer)
@@ -137,7 +192,6 @@ static void switchToNewEnvVar()
 						return string(p2, p3 - p2);
 					}
 				}
-
 			}
 		}
 		return "";
@@ -288,9 +342,16 @@ static void addXpBuildEnv()
 	if (win7SDKDir[win7SDKDir.length() - 1] != '\\')
 		win7SDKDir += "\\";
 	//
-	libAppend = win7SDKDir + "Lib\\x64;";
+	if (vcBit == 64) {
+		libAppend = win7SDKDir + "Lib\\x64;";
+		pathAppend = win7SDKDir + "Bin\\x64;";
+		pathAppend += win7SDKDir + "Bin;";
+	}
+	else {
+		libAppend = win7SDKDir + "Lib;";
+		pathAppend = win7SDKDir + "Bin;";
+	}
 	includeAppend = win7SDKDir + "Include;";
-	pathAppend = win7SDKDir + "Bin;";
 }
 
 static void buildNewBatch()
@@ -371,6 +432,8 @@ int main(int argc, char ** argv)
 		printf("do nothings\n");
 		return 0;								// need to do nothings
 	}
+	vcBit = getVcBit();
+	printf("use %d-bit compiler.\n", vcBit);
 	switchVisualCppEnv();
 	return 0;
 }
