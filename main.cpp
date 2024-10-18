@@ -123,6 +123,10 @@ static int getVcBit()
 		return 32;
 	char buffer[2048];
 	fgets(buffer, 2048, fp);
+	fclose(fp);
+	//
+	unlink(tempFile.c_str());
+	//
 	if (strstr(buffer, "x64") || strstr(buffer, "AMD64")) {
 		return 64;
 	}
@@ -356,7 +360,12 @@ static void addXpBuildEnv()
 
 static void buildNewBatch()
 {
-	FILE * fp = fopen("a.bat", "wt");
+	std::string temp = getEnvValue("TEMP");
+	if (temp[temp.length() - 1] != '\\')
+		temp += "\\";
+	std::string tempFile = temp + "visual-c-new-env.bat";
+	//
+	FILE * fp = fopen(tempFile.c_str(), "wt");
 	for (auto it = newVars.cbegin(); it != newVars.cend(); it++) {
 		const string key = it->first;
 		const string value = it->second;
